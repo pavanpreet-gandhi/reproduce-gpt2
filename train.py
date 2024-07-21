@@ -107,9 +107,9 @@ model = torch.compile(model)
 
 
 # Training loop
-checkpoint_freq = 2
-validation_freq = 2
-validation_steps = 2
+checkpoint_freq = 1000
+validation_freq = 250
+validation_steps = 20
 
 for step in range(num_steps):
     t0 = time.time()
