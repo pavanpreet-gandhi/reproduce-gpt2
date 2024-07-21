@@ -13,6 +13,7 @@ from dataloader import DataLoader
 
 # Configure logging
 log_dir = 'logs'
+checkpoint_dir = f'{log_dir}/checkpoints'
 logging.basicConfig(
     filename=f'{log_dir}/train.log',
     level=logging.INFO,
@@ -107,6 +108,9 @@ model = torch.compile(model)
 
 # Training loop
 checkpoint_freq = 2
+validation_freq = 2
+validation_steps = 2
+
 for step in range(num_steps):
     t0 = time.time()
 
@@ -141,6 +145,24 @@ for step in range(num_steps):
 
     # save model checkpoint
     if step % checkpoint_freq == 0:
-        filepath = f'{log_dir}/checkpoint_{step}.pt'
+        filepath = f'{checkpoint_dir}/checkpoint_{step}.pt'
         torch.save(model.state_dict(), filepath)
         logging.info(f'Model checkpoint saved to {filepath}')
+    
+    # validation
+    if step % validation_freq == 0:
+        t0 = time.time()
+        model.eval()
+        val_loss_accum = torch.tensor(0.0, device=device, requires_grad=False)
+        with torch.no_grad():
+            for _ in range(validation_steps):
+                x, y = val_data_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                logits, val_loss = model(x, targets=y)
+                val_loss = val_loss / validation_steps
+                val_loss_accum += val_loss.detach()
+        torch.cuda.synchronize()
+        t1 = time.time()
+        dt = (t1 - t0) * 1000
+        logging.info(f"Validation loss: {val_loss_accum:.6f} | dt: {dt:.2f} ms")
+        model.train()
