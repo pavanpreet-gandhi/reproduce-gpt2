@@ -48,7 +48,7 @@ min_lr = max_lr / 10
 warmup_steps = 715
 decay_steps = int(10e9 / 2**19) - warmup_steps # roughly over 1 billion tokens
 num_steps = int(10e9 / 2**19) * 2 # roughly over 2 billion tokens
-assert num_steps > (warmup_steps + decay_steps), 'Total number of steps must be greater than warmup steps + decay steps'
+assert num_steps >= (warmup_steps + decay_steps), 'Total number of steps must be greater than warmup steps + decay steps'
 logging.info(f'Learning rate schedule: max_lr={max_lr}, min_lr={min_lr}, warmup_steps={warmup_steps}, decay_steps={decay_steps}, num_steps={num_steps}')
 
 def lr_scheduler(step: int) -> float:
