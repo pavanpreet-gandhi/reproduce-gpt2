@@ -106,6 +106,7 @@ model = torch.compile(model)
 
 
 # Training loop
+checkpoint_freq = 2
 for step in range(num_steps):
     t0 = time.time()
 
@@ -116,7 +117,7 @@ for step in range(num_steps):
         # forward pass
         x, y = train_data_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.float32): # casting to bfloat16 requires compute capability >= 8.0
+        with torch.autocast(device_type=device.type, dtype=torch.float16): # casting to bfloat16 requires compute capability >= 8.0
             logits, loss = model(x, targets=y)
 
         # backward pass
@@ -137,3 +138,9 @@ for step in range(num_steps):
     dt = (t1 - t0) * 1000 # in milliseconds
     throughput = (B * T * grad_accum_steps) / (dt / 1000) # tokens per second
     logging.info(f"step {step:4d} | loss {loss_accum:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f} ms | throughput: {throughput:.2f} tps")
+
+    # save model checkpoint
+    if step % checkpoint_freq == 0:
+        filepath = f'{log_dir}/checkpoint_{step}.pt'
+        torch.save(model.state_dict(), filepath)
+        logging.info(f'Model checkpoint saved to {filepath}')
