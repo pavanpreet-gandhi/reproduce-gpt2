@@ -60,7 +60,7 @@ def lr_scheduler(step: int) -> float:
 
 filepath = f'{log_dir}/lr_schedule.png'
 plt.figure(figsize=(10, 6))
-plt.plot([lr_scheduler(step) for step in range(0, decay_steps + 1)])
+plt.plot([lr_scheduler(step) for step in range(0, num_steps + 1)])
 plt.title('Learning rate schedule')
 plt.xlabel('Step')
 plt.ylabel('Learning rate')
@@ -102,11 +102,10 @@ logging.info(f'Optimizer created with AdamW algorithm')
 # Computational optimizations
 logging.info('Compiling model...')
 model = torch.compile(model)
-torch.set_float32_matmul_precision('high') # requires compute capability >= 8.0
+# torch.set_float32_matmul_precision('high') # requires compute capability >= 8.0
 
 
 # Training loop
-logging.info('Starting training loop...\n')
 for step in range(num_steps):
     t0 = time.time()
 
