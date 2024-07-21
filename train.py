@@ -121,7 +121,7 @@ for step in range(num_steps):
         # forward pass
         x, y = train_data_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.float16): # casting to bfloat16 requires compute capability >= 8.0
+        with torch.autocast(device_type=device.type, dtype=torch.float32): # casting to bfloat16 requires compute capability >= 8.0
             logits, loss = model(x, targets=y)
 
         # backward pass
