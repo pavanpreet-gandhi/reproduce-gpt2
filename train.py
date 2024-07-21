@@ -45,9 +45,9 @@ val_dataset = dataset.take(1000)
 # Set learning rate schedule
 max_lr = 6e-4
 min_lr = max_lr / 10
-warmup_steps = 715
-decay_steps = int(10e9 / 2**19) - warmup_steps # roughly over 1 billion tokens
-num_steps = int(10e9 / 2**19) * 2 # roughly over 2 billion tokens
+warmup_steps = 10 # 715
+decay_steps = 40 # int(10e9 / 2**19) - warmup_steps # roughly over 1 billion tokens
+num_steps = 50 # int(10e9 / 2**19) * 2 # roughly over 2 billion tokens
 assert num_steps >= (warmup_steps + decay_steps), 'Total number of steps must be greater than warmup steps + decay steps'
 logging.info(f'Learning rate schedule: max_lr={max_lr}, min_lr={min_lr}, warmup_steps={warmup_steps}, decay_steps={decay_steps}, num_steps={num_steps}')
 
@@ -55,7 +55,7 @@ def lr_scheduler(step: int) -> float:
     if step < warmup_steps:
         return min_lr + (max_lr - min_lr) * step / warmup_steps
     elif step < (warmup_steps + decay_steps):
-        return min_lr + (max_lr - min_lr) * (1 + math.cos((step - warmup_steps) / (decay_steps - warmup_steps) * math.pi)) / 2
+        return min_lr + (max_lr - min_lr) * (1 + math.cos(step / decay_steps * math.pi)) / 2
     else:
         return min_lr
 
@@ -103,6 +103,7 @@ logging.info(f'Optimizer created with AdamW algorithm')
 # Computational optimizations
 logging.info('Compiling model...')
 model = torch.compile(model)
+scaler = torch.cuda.amp.GradScaler() # required when autocasting to float16
 # torch.set_float32_matmul_precision('high') # requires compute capability >= 8.0
 
 
@@ -121,20 +122,22 @@ for step in range(num_steps):
         # forward pass
         x, y = train_data_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.float32): # casting to bfloat16 requires compute capability >= 8.0
+        with torch.autocast(device_type=device.type, dtype=torch.float16): # casting to bfloat16 requires compute capability >= 8.0
             logits, loss = model(x, targets=y)
 
         # backward pass
         loss = loss / grad_accum_steps # loss is averaged over each micro batch in the batch
         loss_accum += loss.detach() # accumulate loss for logging
-        loss.backward() # gradients are accumulated over each call of loss.backward()
+        scaler.scale(loss).backward() # gradients are scaled to prevent underflow and accumulated over each call of backward()
     
     # optimizer step
     lr = lr_scheduler(step)
     for group in optimizer.param_groups:
         group['lr'] = lr
+    scaler.unscale_(optimizer) # unscale the gradients of the optimizer's assigned params in-place
     norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0) # gradient clipping
-    optimizer.step()
+    scaler.step(optimizer) # optimizer step
+    scaler.update() # updates the scale for next iteration
 
     # logging
     torch.cuda.synchronize() # wait for everything to finish running
