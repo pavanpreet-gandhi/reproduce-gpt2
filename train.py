@@ -1,4 +1,5 @@
 import math
+import time
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -18,29 +19,36 @@ print('Using device:', device.type)
 
 # Load and split dataset
 print('Loading dataset...')
-dataset = load_dataset(path='HuggingFaceFW/fineweb-edu', split='train', streaming=True)
+dataset = load_dataset(
+    path='HuggingFaceFW/fineweb-edu', 
+    name='default', # the full most recent version of the dataset with over 1.3 trillion GPT-2 tokens
+    split='train', # there is only this one split
+    streaming=True
+)
 dataset = dataset.shuffle(seed=13)
 train_dataset = dataset.skip(1000)
 val_dataset = dataset.take(1000)
 
 
 # Set learning rate schedule
+print('Configuring learning rate schedule...')
 max_lr = 6e-4
 min_lr = max_lr / 10
-warmup_steps = 10
-num_steps = 50
+warmup_steps = 715
+decay_steps = int(10e9 / 2**19) - warmup_steps
+num_steps = int(10e9 / 2**19) * 2 # roughly over 2 billion tokens
 
 def lr_scheduler(step: int) -> float:
     if step < warmup_steps:
         return min_lr + (max_lr - min_lr) * step / warmup_steps
-    elif step < num_steps:
-        return min_lr + (max_lr - min_lr) * (1 + math.cos((step - warmup_steps) / (num_steps - warmup_steps) * math.pi)) / 2
+    elif step < (warmup_steps + decay_steps):
+        return min_lr + (max_lr - min_lr) * (1 + math.cos((step - warmup_steps) / (decay_steps - warmup_steps) * math.pi)) / 2
     else:
         return min_lr
 
 filepath = 'logs/lr_schedule.png'
 plt.figure(figsize=(10, 6))
-plt.plot([lr_scheduler(step) for step in range(0, num_steps + 1)])
+plt.plot([lr_scheduler(step) for step in range(0, decay_steps + 1)])
 plt.title('Learning rate schedule')
 plt.xlabel('Step')
 plt.ylabel('Learning rate')
@@ -49,31 +57,73 @@ print(f'Learning rate schedule saved to {filepath}')
 
 
 # Set batch sizes
+print('Configuring batch sizes...')
 B, T = 4, 1024
-total_batch_size = 524288 # 2**19
+total_batch_size = 2**19
 assert total_batch_size % (B * T) == 0, 'Total batch size must be divisible by B * T'
+grad_accum_steps = total_batch_size // (B * T)
 
 
 # Create data loaders
+print('Creating data loaders...')
 train_data_loader = DataLoader(B=B, T=T, dataset=train_dataset)
 val_data_loader = DataLoader(B=B, T=T, dataset=val_dataset)
 
 
 # Create model
+print('Creating model...')
 config = GPTConfig(vocab_size=50304)
 model = GPT(config).to(device)
 
 
 # Configure optimizer
+print('Configuring optimizer...')
 param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
 weight_decay_params = [p for pn, p in param_dict.items() if p.dim() >= 2]
 non_weight_decay_params = [p for pn, p in param_dict.items() if p.dim() < 2]
-optim_groups = [
+param_groups = [
     {'params': weight_decay_params, 'weight_decay': 0.01},
     {'params': non_weight_decay_params, 'weight_decay': 0.0}
 ]
-optimizer = torch.optim.AdamW(optim_groups, lr=1.0, betas=(0.9, 0.95), eps=1e-8, fused=True)
+optimizer = torch.optim.AdamW(param_groups, lr=1.0, betas=(0.9, 0.95), eps=1e-8, fused=True)
+
+
+# Computational optimizations
+print('Applying computational optimizations...')
+model = torch.compile(model)
+torch.set_float32_matmul_precision('high') # requires compute capability >= 8.0
 
 
 # Training loop
-pass
+print('Starting training loop...\n')
+for step in range(decay_steps):
+    t0 = time.time()
+
+    loss_accum = torch.tensor(0.0, device=device, requires_grad=False)
+    optimizer.zero_grad()
+    for micro_step in range(grad_accum_steps):
+
+        # forward pass
+        x, y = train_data_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        with torch.autocast(device_type=device.type, dtype=torch.float32): # casting to bfloat16 requires compute capability >= 8.0
+            logits, loss = model(x, targets=y)
+
+        # backward pass
+        loss = loss / grad_accum_steps # loss is averaged over each micro batch in the batch
+        loss_accum += loss.detach() # accumulate loss for logging
+        loss.backward() # gradients are accumulated over each call of loss.backward()
+    
+    # optimizer step
+    lr = lr_scheduler(step)
+    for group in optimizer.param_groups:
+        group['lr'] = lr
+    norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0) # gradient clipping
+    optimizer.step()
+
+    # logging
+    torch.cuda.synchronize() # wait for everything to finish running
+    t1 = time.time()
+    dt = (t1 - t0) * 1000 # in milliseconds
+    throughput = (B * T * grad_accum_steps) / (dt / 1000) # tokens per second
+    print(f"step {step:4d} | loss {loss_accum:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f} ms | throughput: {throughput:.2f} tps")
